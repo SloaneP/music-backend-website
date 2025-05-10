@@ -12,6 +12,11 @@ env.bak/
 venv.bak/
 idea.bak/
 
+.gitattributes
+
+**/deploy/mongo/data/*
+!**/deploy/mongo/data/.gitkeep
+
 .vscode
 
 **/deploy/postgresql/data/*
