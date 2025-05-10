@@ -1,0 +1,1 @@
+uvicorn app.app:app --port 5100 --reload

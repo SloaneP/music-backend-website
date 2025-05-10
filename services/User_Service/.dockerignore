@@ -1,0 +1,9 @@
+.git
+**/__pycache__/*
+**/venv/*
+**/.env
+
+.vscode
+
+**/deploy/postgresql/data/*
+!**/deploy/postgresql/data/.gitkeep

@@ -1,0 +1,111 @@
+model: |
+  [request_definition]
+  r = sub, obj, act
+  
+  [policy_definition]
+  p = sub_rule, obj, act
+  
+  [policy_effect]
+  e = some(where (p.eft == allow))
+  
+  [matchers]
+  m = eval(p.sub_rule) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
+
+services:
+  - name: user-service
+    entrypoint: http://user-service:5001/
+    inject_token_in_swagger: true
+
+  - name: music-service
+    entrypoint: http://music-service:5002/
+    inject_token_in_swagger: true
+
+policies:
+  # ---------------- USER-SERVICE ----------------
+  # Только админ (group_id == 1) может управлять группами
+  - service: user-service
+    rule: r.sub.group_id == 1
+    resource: /users/*
+    methods: GET
+
+  - service: user-service
+    rule: r.sub.group_id == 2
+    resource: /users/*
+    methods: GET
+
+  - service: user-service
+    rule: r.sub.group_id == 3
+    resource: /users/*
+    methods: (GET)|(POST)|(PUT)|(DELETE)|(PATCH)
+
+  - service: user-service
+    rule: r.sub.group_id == 3
+    resource: /groups*
+    methods: (GET)|(POST)|(PUT)|(DELETE)|(PATCH)
+
+  # Регистрация и логин разрешены для всех
+  - service: user-service
+    resource: /auth/*
+    methods: POST
+    white_list: true
+
+  # Профиль пользователя доступен для авторизованных пользователей
+  - service: user-service
+    resource: /users/*
+    methods: (GET)|(PATCH)
+    rule: r.sub.group_id > 0
+
+  # ---------------- MUSIC-SERVICE ----------------
+  # Только авторизованные пользователи могут видеть треки
+  - service: music-service
+    resource: /tracks*
+    methods: (GET)
+    rule: r.sub.group_id > 0
+
+  # Только авторизованные могут загружать/удалять треки
+  - service: music-service
+    resource: /tracks/upload
+    methods: POST
+    rule: r.sub.group_id > 0
+
+  - service: music-service
+    resource: /tracks/{track_id}
+    methods: (PUT)|(DELETE)
+    rule: r.sub.group_id > 0
+
+  # Облачные файлы доступны только авторизованным
+  - service: music-service
+    resource: /files*
+    methods: (GET)|(POST)|(DELETE)
+    rule: r.sub.group_id > 0
+
+  # ---------------- PLAYLISTS ----------------
+  # Артисты и авторизованные пользователи могут создавать плейлисты
+  - service: music-service
+    resource: /playlists/*
+    methods: POST
+    rule: r.sub.group_id > 0
+
+  # Артисты и авторизованные пользователи могут редактировать свои плейлисты
+  - service: music-service
+    resource: /playlists/{playlist_id}
+    methods: (PUT)|(DELETE)
+    rule: r.sub.group_id > 0
+
+  # Просмотр плейлистов доступен всем пользователям
+  - service: music-service
+    resource: /playlists/*
+    methods: GET
+    rule: r.sub.group_id > 0
+
+  # ---------------- FAVORITES ----------------
+  # Только авторизованные пользователи могут добавлять/удалять треки в избранное
+  - service: music-service
+    resource: /users/{user_id}/favorites/{track_id}
+    methods: POST
+    rule: r.sub.group_id > 0
+
+  - service: music-service
+    resource: /users/{user_id}/favorites/{track_id}
+    methods: DELETE
+    rule: r.sub.group_id > 0
