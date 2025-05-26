@@ -4,13 +4,14 @@ from uuid import UUID
 from fastapi import UploadFile
 from pydantic import BaseModel, HttpUrl, UUID4
 from typing import Optional, List
-
+from ..database.enums import MoodEnum, GenreEnum
 
 class TrackBase(BaseModel):
     title: str
     artist: str
     duration: float
-    genre: str
+    genre: GenreEnum
+    mood: Optional[MoodEnum] = None
     release_year: Optional[int] = None
     track_url: HttpUrl
     cover_url: Optional[HttpUrl] = None
@@ -19,7 +20,8 @@ class TrackBase(BaseModel):
 class TrackCreate(BaseModel):
     title: str
     artist: str
-    genre: str
+    genre: GenreEnum
+    mood: Optional[MoodEnum] = None
     release_year: Optional[int] = None
 
 
@@ -29,7 +31,8 @@ class TrackUpdate(BaseModel):
     """
     title: Optional[str] = None
     artist: Optional[str] = None
-    genre: Optional[str] = None
+    genre: Optional[GenreEnum] = None
+    mood: Optional[MoodEnum] = None
     release_year: Optional[int] = None
 
 

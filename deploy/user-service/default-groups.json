@@ -1,5 +1,9 @@
 [
     {
+        "id": 0,
+        "name": "DefaultUser"
+    },
+    {
         "id": 1,
         "name": "User"
     },

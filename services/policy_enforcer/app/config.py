@@ -8,6 +8,12 @@ class Config(BaseSettings):
         alias='JWT_SECRET'
     )
 
+    FRONT: str = Field(
+        default='http://localhost:5173',
+        env='FRONT',
+        alias='FRONT'
+    )
+
     policies_config_path: FilePath = Field(
         default='policies.yaml',
         alias='POLICIES_CONFIG_PATH'

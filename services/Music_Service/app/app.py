@@ -10,8 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import config, schemas, crud
+from .broker.rabbitmq_producer import send_track_play_event
 from .database import get_async_session, db_initializer
 from . import storage
+
+from .database.enums import GenreEnum, MoodEnum
 
 
 cfg = config.load_config()
@@ -69,17 +72,13 @@ def extract_email_data(token: str) -> Optional[tuple[str, UUID]]:
     return None
 
 
-async def get_current_user(request: Request) -> tuple[str, UUID]:
+async def get_current_user(request: Request) -> tuple[str, UUID] | None:
     auth_header = request.headers.get("authorization")
     logger.info(f"Authorization header: {auth_header}")
 
     if not auth_header or not auth_header.startswith("Bearer "):
         logger.warning("Authorization header missing or invalid")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header missing or invalid",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return None
 
     token = auth_header.split(" ")[1]
     logger.info(f"Extracted token: {token}")
@@ -89,16 +88,46 @@ async def get_current_user(request: Request) -> tuple[str, UUID]:
 
     if not user_data:
         logger.warning("Invalid or expired token")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return None
 
     email, user_id = user_data
     logger.info(f"Authenticated user: {email} (ID: {user_id})")
     return email, user_id
 
+# async def get_current_user(request: Request) -> tuple[str, UUID]:
+#     auth_header = request.headers.get("authorization")
+#     logger.info(f"Authorization header: {auth_header}")
+#
+#     if not auth_header or not auth_header.startswith("Bearer "):
+#         logger.warning("Authorization header missing or invalid")
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail="Authorization header missing or invalid",
+#             headers={"WWW-Authenticate": "Bearer"},
+#         )
+#
+#     token = auth_header.split(" ")[1]
+#     logger.info(f"Extracted token: {token}")
+#
+#     user_data = extract_email_data(token)
+#     logger.info(f"Extracted user data: {user_data}")
+#
+#     if not user_data:
+#         logger.warning("Invalid or expired token")
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail="Invalid or expired token",
+#             headers={"WWW-Authenticate": "Bearer"},
+#         )
+#
+#     email, user_id = user_data
+#     logger.info(f"Authenticated user: {email} (ID: {user_id})")
+#     return email, user_id
+
+@app.post("/tracks/play", tags=["Tracks"])
+async def track_play(event: dict):
+    await send_track_play_event(event)
+    return {"status": "ok"}
 
 @app.get("/", include_in_schema=False)
 async def root():
@@ -126,6 +155,36 @@ async def get_track(
         raise HTTPException(status_code=404, detail="Track not found")
     return track
 
+# # Получить случайный трек
+# @app.get("/track/random-track", response_model=schemas.TrackResponse, tags=["Tracks"])
+# async def random_track(db: AsyncSession = Depends(get_async_session)):
+#     track = await crud.get_random_track(db)
+#     if not track:
+#         raise HTTPException(status_code=404, detail="Track not found")
+#     return track
+
+# @app.get("/track/random-track", response_model=schemas.TrackResponse, tags=["Tracks"])
+# async def random_track(db: AsyncSession = Depends(get_async_session), user_data: tuple[str, UUID] = Depends(get_current_user)):
+#     email, user_id = user_data
+#     track = await crud.get_random_track(db, user_id)
+#     if not track:
+#         raise HTTPException(status_code=404, detail="Track not found")
+#     return track
+
+@app.get("/track/random-track", response_model=schemas.TrackResponse, tags=["Tracks"])
+async def random_track(
+    db: AsyncSession = Depends(get_async_session),
+    user_data: tuple[str, UUID] = Depends(get_current_user)
+):
+    if user_data:  # Если пользователь авторизован
+        email, user_id = user_data
+        track = await crud.get_random_track(db, user_id)
+    else:  # Если пользователь не авторизован
+        track = await crud.get_random_track(db)
+
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return track
 
 ###
 
@@ -133,7 +192,8 @@ async def get_track(
 async def create_track_with_files(
     title: str = Form(...),
     artist: str = Form(...),
-    genre: str = Form(...),
+    genre: GenreEnum = Form(...),
+    mood: Optional[MoodEnum] = Form(...),
     release_year: int = Form(None),
     files: List[UploadFile] = File(...),
     session: AsyncSession = Depends(get_async_session),
@@ -143,6 +203,7 @@ async def create_track_with_files(
         title=title,
         artist=artist,
         genre=genre,
+        mood=mood,
         release_year=release_year,
         track_url="http://temp",  # временно, заменится в CRUD
         cover_url="http://temp"   # временно, заменится в CRUD
@@ -155,12 +216,28 @@ async def create_track_with_files(
 @app.put("/tracks/{track_id}", response_model=schemas.TrackResponse, tags=["Tracks"])
 async def update_track(
     track_id: UUID,
-    track: schemas.TrackUpdate,
+    title: Optional[str] = Form(None),
+    artist: Optional[str] = Form(None),
+    genre: Optional[GenreEnum] = Form(None),
+    mood: Optional[MoodEnum] = Form(None),
+    release_year: Optional[int] = Form(None),
     session: AsyncSession = Depends(get_async_session),
-    user_data: tuple[str, UUID] = Depends(get_current_user)
+    user_data: tuple[str, UUID] = Depends(get_current_user),
 ):
+    update_data = {k: v for k, v in {
+        "title": title,
+        "artist": artist,
+        "genre": genre,
+        "mood": mood,
+        "release_year": release_year,
+    }.items() if v is not None}
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    track_update = schemas.TrackUpdate(**update_data)
     email, _ = user_data
-    updated_track = await crud.update_track(session, track_id, track, email)
+    updated_track = await crud.update_track(session, track_id, track_update, email)
     if not updated_track:
         raise HTTPException(status_code=404, detail="Track not found")
     return updated_track

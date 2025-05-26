@@ -6,6 +6,9 @@ from sqlalchemy.orm import relationship
 
 from .database import Base, SCHEMA
 
+from sqlalchemy import Enum as PgEnum
+from .enums import MoodEnum, GenreEnum
+
 # Таблица для связи треков и альбомов
 album_track_association = Table(
     'album_track_association', Base.metadata,
@@ -22,6 +25,7 @@ playlist_track = Table(
     schema="music"
 )
 
+
 class Track(Base):
     __tablename__ = "tracks"
     __table_args__ = {'schema': 'music'}
@@ -30,7 +34,9 @@ class Track(Base):
     title = Column(String, nullable=False)
     artist = Column(String, nullable=False)
     duration = Column(Float, nullable=False)
-    genre = Column(String, nullable=False)
+    # genre = Column(String, nullable=False)
+    genre = Column(PgEnum(GenreEnum, name="genre_enum", create_type=True), nullable=False)
+    mood = Column(PgEnum(MoodEnum, name="mood_enum", create_type=True), nullable=True)
     release_year = Column(Integer)
     track_url = Column(String, nullable=False)
     cover_url = Column(String, nullable=True)

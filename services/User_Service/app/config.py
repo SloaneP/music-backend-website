@@ -10,7 +10,7 @@ class Config(BaseSettings):
     )
 
     FRONT: str = Field(
-        default='http://localhost:3000',
+        default='http://localhost:5173',
         env='FRONT',
         alias='FRONT'
     )

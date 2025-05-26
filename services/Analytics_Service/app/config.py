@@ -11,31 +11,23 @@ class Config(BaseSettings):
         alias='PG_ASYNC_DSN'
     )
 
-    FRONT: str = Field(
-        default='http://localhost:5173',
-        env='FRONT',
-        alias='FRONT'
-    )
-
     RABBITMQ_DSN: AmqpDsn = Field(
         default='amqp://guest:guest@rabbitmq//',
         env='RABBITMQ_DSN',
         alias='RABBITMQ_DSN'
     )
 
-    JWT_SECRET: str = Field(
-        default='JWT_SECRET',
-        env='JWT_SECRET',
-        alias='JWT_SECRET'
+    FRONT: str = Field(
+        default='http://localhost:5173',
+        env='FRONT',
+        alias='FRONT'
     )
 
-    SERVICE_NAME: str = "MusicService"
-
+    SERVICE_NAME: str = "AnalyticsService"
 
     class Config:
         env_file = ".env"
         extra = Extra.allow
-
 
 
 def load_config() -> Config:

@@ -1,5 +1,8 @@
 import os
+import random
+import uuid
 
+import redis.asyncio as redis
 from tempfile import NamedTemporaryFile
 from typing import List, Optional
 from uuid import UUID
@@ -43,6 +46,89 @@ async def get_tracks(
             track.cover_url = STORAGE_BASE_URL + track.cover_url
 
     return tracks
+
+
+# Получение случайного трека
+# async def get_random_track(db: AsyncSession) -> models.Track | None:
+#     result = await db.execute(select(models.Track).order_by(func.random()).limit(1))
+#     track = result.scalars().first()
+#
+#     if track:
+#         return track
+#     return None
+
+# Redis (кэширование)
+r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+
+async def get_random_track(db: AsyncSession, user_id: UUID | None = None) -> schemas.TrackResponse | None:
+    if user_id:
+        user_tracks_key = f"user:{user_id}:tracks"
+    else:
+        user_tracks_key = "public:tracks"
+
+    tracks = await r.smembers(user_tracks_key)
+
+    if not tracks:
+        result = await db.execute(select(models.Track))
+        tracks = result.scalars().all()
+
+        for track in tracks:
+            track_id_str = str(track.id)
+            if user_id:
+                await r.sadd(user_tracks_key, track_id_str)
+            else:
+                await r.sadd("public:tracks", track_id_str)
+
+        tracks = await r.smembers(user_tracks_key)
+
+    random_track_id_str = random.choice(list(tracks))
+
+    print(f"Random track ID for user {user_id} from Redis: {random_track_id_str}")
+
+    try:
+        random_track_id = uuid.UUID(random_track_id_str)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
+
+    track = await get_track(db, random_track_id)
+
+    if track:
+        if user_id:
+            await r.srem(user_tracks_key, random_track_id_str)
+        return schemas.TrackResponse.from_orm(track)
+
+    return None
+
+# async def get_random_track(db: AsyncSession, user_id: str) -> schemas.TrackResponse | None:
+#     user_tracks_key = f"user:{user_id}:tracks"
+#
+#     tracks = await r.smembers(user_tracks_key)
+#
+#     if not tracks:
+#         result = await db.execute(select(models.Track))
+#         tracks = result.scalars().all()
+#
+#         for track in tracks:
+#             track_id_str = str(track.id)
+#             await r.sadd(user_tracks_key, track_id_str)
+#
+#         tracks = await r.smembers(user_tracks_key)
+#
+#     random_track_id_str = random.choice(list(tracks))
+#
+#     print(f"Random track ID for user {user_id} from Redis: {random_track_id_str}")
+#
+#     try:
+#         random_track_id = uuid.UUID(random_track_id_str)
+#     except ValueError as e:
+#         raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
+#
+#     track = await get_track(db, random_track_id)
+#
+#     if track:
+#         await r.srem(user_tracks_key, random_track_id_str)
+#         return schemas.TrackResponse.from_orm(track)
+#     return None
 
 async def create_track_with_files(
     db: AsyncSession,
@@ -88,6 +174,7 @@ async def create_track_with_files(
         artist=track_data.artist,
         duration=duration,
         genre=track_data.genre,
+        mood=track_data.mood,
         release_year=track_data.release_year,
         track_url=track_url,
         cover_url=cover_url

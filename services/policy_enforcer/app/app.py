@@ -46,7 +46,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,7 +64,11 @@ async def catch_all(request: Request, path_name: str):
     if not enforce_result.access_allowed:
         return JSONResponse(content={'message': 'Content not found'}, status_code=404)
 
-    client = httpx.AsyncClient(base_url=enforce_result.redirect_service)
+    # client = httpx.AsyncClient(base_url=enforce_result.redirect_service)
+    client = httpx.AsyncClient(
+        base_url=enforce_result.redirect_service,
+        timeout=httpx.Timeout(20.0)
+    )
     url = httpx.URL(path=request.url.path,
                     query=request.url.query.encode("utf-8"))
     rp_req = client.build_request(request.method, url,

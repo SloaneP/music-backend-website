@@ -29,11 +29,6 @@ policies:
     methods: GET
 
   - service: user-service
-    rule: r.sub.group_id == 2
-    resource: /users/*
-    methods: GET
-
-  - service: user-service
     rule: r.sub.group_id == 3
     resource: /users/*
     methods: (GET)|(POST)|(PUT)|(DELETE)|(PATCH)
@@ -60,7 +55,12 @@ policies:
   - service: music-service
     resource: /tracks*
     methods: (GET)
-    rule: r.sub.group_id > 0
+    rule: r.sub.group_id >= 0
+
+  - service: music-service
+    resource: /track/random-track
+    methods: (GET)
+    rule: r.sub.group_id >= 0
 
   # Только авторизованные могут загружать/удалять треки
   - service: music-service
