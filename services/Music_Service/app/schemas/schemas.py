@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import UploadFile
-from pydantic import BaseModel, HttpUrl, UUID4
+from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, List
 from ..database.enums import MoodEnum, GenreEnum
 
@@ -82,12 +82,17 @@ class PlayHistoryCreate(BaseModel):
     user_id: UUID
     track_id: UUID
 
+
+class PlayHistoryUpdate(BaseModel):
+    played_duration: float = Field(..., ge=0)
+
+
 class PlayHistoryResponse(BaseModel):
     id: UUID
     user_id: UUID
     track_id: UUID
     timestamp: datetime
-    # track: TrackResponse
+    played_duration: Optional[float]
     track: Optional["TrackResponse"]
 
     class Config:

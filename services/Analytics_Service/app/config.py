@@ -23,6 +23,14 @@ class Config(BaseSettings):
         alias='FRONT'
     )
 
+    JWT_SECRET: str = Field(
+        default='JWT_SECRET',
+        env='JWT_SECRET',
+        alias='JWT_SECRET'
+    )
+
+    REDIS_URL: str = "redis://redis:6379/0"
+
     SERVICE_NAME: str = "AnalyticsService"
 
     class Config:

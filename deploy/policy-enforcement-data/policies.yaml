@@ -20,6 +20,10 @@ services:
     entrypoint: http://music-service:5002/
     inject_token_in_swagger: true
 
+  - name: analytics-service
+    entrypoint: http://analytics-service:5003/
+    inject_token_in_swagger: true
+
 policies:
   # ---------------- USER-SERVICE ----------------
   # Только админ (group_id == 1) может управлять группами
@@ -59,6 +63,11 @@ policies:
 
   - service: music-service
     resource: /track/random-track
+    methods: (GET)
+    rule: r.sub.group_id >= 0
+
+  - service: music-service
+    resource: /tracks/search
     methods: (GET)
     rule: r.sub.group_id >= 0
 
@@ -131,4 +140,22 @@ policies:
   - service: music-service
     resource: /history/*
     methods: POST
+    rule: r.sub.group_id > 0
+
+
+  # ---------------- ANALYTICS ----------------
+
+  - service: analytics-service
+    resource: /user/analytics/raw-data*
+    methods: GET
+    rule: r.sub.group_id > 0
+
+  - service: analytics-service
+    resource: /user/analytics/*
+    methods: GET
+    rule: r.sub.group_id > 0
+
+  - service: analytics-service
+    resource: /user/analytics/*
+    methods: PUT
     rule: r.sub.group_id > 0

@@ -1,8 +1,10 @@
 import json
 import logging
+import time
 from typing import List, Optional
 from uuid import UUID
 
+import redis
 import jwt
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, Query, Request, status
 from fastapi.responses import RedirectResponse
@@ -71,7 +73,7 @@ def extract_email_data(token: str) -> Optional[tuple[str, UUID]]:
     logger.warning("Returning None from extract_email_data")
     return None
 
-
+r = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
 async def get_current_user(request: Request) -> tuple[str, UUID] | None:
     auth_header = request.headers.get("authorization")
     logger.info(f"Authorization header: {auth_header}")
@@ -92,6 +94,12 @@ async def get_current_user(request: Request) -> tuple[str, UUID] | None:
 
     email, user_id = user_data
     logger.info(f"Authenticated user: {email} (ID: {user_id})")
+
+    r.set(f"user:{user_id}:token", token, ex=3600)
+    current_time = time.time()
+    r.setex(f"user:{user_id}:last_activity", 3600, current_time)
+    r.sadd("active_users", str(user_id))
+
     return email, user_id
 
 # async def get_current_user(request: Request) -> tuple[str, UUID]:
@@ -124,17 +132,35 @@ async def get_current_user(request: Request) -> tuple[str, UUID] | None:
 #     logger.info(f"Authenticated user: {email} (ID: {user_id})")
 #     return email, user_id
 
-@app.post("/tracks/play", tags=["Tracks"])
-async def track_play(event: dict):
-    await send_track_play_event(event)
-    return {"status": "ok"}
+# @app.post("/tracks/play", tags=["Tracks"])
+# async def track_play(event: dict):
+#     await send_track_play_event(event)
+#     return {"status": "ok"}
 
 @app.get("/", include_in_schema=False)
 async def root():
     return RedirectResponse(url="/docs")
 
 
-# Получить список треков
+# ─────────── TRACKS ROUTES ─────────── #
+@app.get("/tracks/search", response_model=list[schemas.TrackResponse], tags=["Tracks"])
+async def search_tracks_endpoint(
+    q: str,
+    search_in: Optional[List[str]] = Query(None, description="Fields to search in: title, artist, genre, mood"),
+    skip: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_async_session)
+):
+    allowed_fields = {"title", "artist", "genre", "mood"}
+
+    if search_in:
+        search_in = [field for field in search_in if field in allowed_fields]
+        if not search_in:
+            raise HTTPException(status_code=400, detail=f"Invalid search_in fields. Allowed: {allowed_fields}")
+
+    results = await crud.search_tracks(session, q, search_in=search_in, skip=skip, limit=limit)
+    return results
+
 @app.get("/tracks", response_model=list[schemas.TrackResponse], tags=["Tracks"])
 async def get_tracks(
     skip: int = 0,
@@ -143,8 +169,6 @@ async def get_tracks(
 ):
     return await crud.get_tracks(session, skip, limit)
 
-
-# Получить трек по ID
 @app.get("/tracks/{track_id}", response_model=schemas.TrackResponse, tags=["Tracks"])
 async def get_track(
     track_id: UUID,
@@ -155,7 +179,6 @@ async def get_track(
         raise HTTPException(status_code=404, detail="Track not found")
     return track
 
-# # Получить случайный трек
 # @app.get("/track/random-track", response_model=schemas.TrackResponse, tags=["Tracks"])
 # async def random_track(db: AsyncSession = Depends(get_async_session)):
 #     track = await crud.get_random_track(db)
@@ -176,10 +199,10 @@ async def random_track(
     db: AsyncSession = Depends(get_async_session),
     user_data: tuple[str, UUID] = Depends(get_current_user)
 ):
-    if user_data:  # Если пользователь авторизован
+    if user_data:
         email, user_id = user_data
         track = await crud.get_random_track(db, user_id)
-    else:  # Если пользователь не авторизован
+    else:
         track = await crud.get_random_track(db)
 
     if not track:
@@ -205,14 +228,11 @@ async def create_track_with_files(
         genre=genre,
         mood=mood,
         release_year=release_year,
-        track_url="http://temp",  # временно, заменится в CRUD
-        cover_url="http://temp"   # временно, заменится в CRUD
+        track_url="http://temp",  # временно, заменится в crud
+        cover_url="http://temp"   # временно, заменится в crud
     )
     return await crud.create_track_with_files(session, track_data, files)
 
-
-
-# Обновить трек
 @app.put("/tracks/{track_id}", response_model=schemas.TrackResponse, tags=["Tracks"])
 async def update_track(
     track_id: UUID,
@@ -242,8 +262,6 @@ async def update_track(
         raise HTTPException(status_code=404, detail="Track not found")
     return updated_track
 
-
-# Удалить трек
 @app.delete("/tracks/{track_id}", tags=["Tracks"])
 async def delete_track(
     track_id: UUID,
@@ -258,7 +276,6 @@ async def delete_track(
 
 
 # ─────────── STORAGE ROUTES ─────────── #
-
 @app.get("/files", tags=["Cloud Storage"])
 async def list_cloud_files():
     return storage.list_files()
@@ -275,9 +292,8 @@ async def upload_to_cloud(files: List[UploadFile] = File(...)):
 async def delete_from_cloud(file_path: str):
     return storage.delete_file(file_path)
 
-# ─────────── PLAYLISTS ROUTES ─────────── #
 
-# Создать плейлист
+# ─────────── PLAYLISTS ROUTES ─────────── #
 @app.post("/playlists", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def create_playlist(
     data: schemas.PlaylistCreate,
@@ -287,7 +303,6 @@ async def create_playlist(
     email, user_id = user_data
     return await crud.create_playlist(session, data, user_id)
 
-# Получить плейлисты текущего пользователя
 @app.get("/playlists", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
 async def list_playlists(
     session: AsyncSession = Depends(get_async_session),
@@ -296,7 +311,6 @@ async def list_playlists(
     _, user_id = user_data
     return await crud.get_user_playlists(session, user_id)
 
-# Получить конкретный плейлист
 @app.get("/playlists/{playlist_id}", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def get_playlist(
     playlist_id: UUID,
@@ -309,7 +323,6 @@ async def get_playlist(
         raise HTTPException(404, detail="Playlist not found or access denied")
     return playlist
 
-# Добавить трек в плейлист
 @app.post("/playlists/{playlist_id}/tracks/{track_id}", tags=["Playlists"])
 async def add_track(
     playlist_id: UUID,
@@ -320,7 +333,6 @@ async def add_track(
     _, user_id = user_data
     return await crud.add_track_to_playlist(session, playlist_id, track_id, user_id)
 
-# Удалить трек из плейлиста
 @app.delete("/playlists/{playlist_id}/tracks/{track_id}", tags=["Playlists"])
 async def remove_track(
     playlist_id: UUID,
@@ -331,7 +343,6 @@ async def remove_track(
     _, user_id = user_data
     return await crud.remove_track_from_playlist(session, playlist_id, track_id, user_id)
 
-# Удалить плейлист
 @app.delete("/playlists/{playlist_id}", tags=["Playlists"])
 async def delete_playlist(
     playlist_id: UUID,
@@ -345,8 +356,7 @@ async def delete_playlist(
     return {"message": "Playlist deleted"}
 
 
-# ───── Favorites ───── #
-
+# ─────────── FAVORITES ROUTES ─────────── #
 @app.post("/favorites/{track_id}", tags=["Favorites"])
 async def add_to_favorites(
     track_id: UUID,
@@ -355,7 +365,6 @@ async def add_to_favorites(
 ):
     _, user_id = user_data
     return await crud.add_to_favorites(session, user_id, track_id)
-
 
 @app.delete("/favorites/{track_id}", tags=["Favorites"])
 async def remove_from_favorites(
@@ -368,7 +377,6 @@ async def remove_from_favorites(
         raise HTTPException(404, detail="Favorite not found")
     return {"message": "Removed from favorites"}
 
-
 @app.get("/favorites", response_model=List[schemas.TrackResponse], tags=["Favorites"])
 async def get_favorites(
     session: AsyncSession = Depends(get_async_session),
@@ -378,8 +386,7 @@ async def get_favorites(
     return await crud.get_user_favorites(session, user_id)
 
 
-# ───── Play History ───── #
-
+# ─────────── PLAY HISTORY ROUTES ─────────── #
 @app.post("/history/{track_id}", response_model=schemas.PlayHistoryResponse, tags=["History"])
 async def add_play_history(
     track_id: UUID,
@@ -390,21 +397,31 @@ async def add_play_history(
     history_entry = await crud.add_play_history(session, user_id, track_id)
     return history_entry
 
-
-@app.get("/history", response_model=List[schemas.PlayHistoryResponse], tags=["History"])
-async def get_history(
-    limit: int = Query(10, ge=1, le=100),
+@app.patch("/history/{entry_id}", response_model=schemas.PlayHistoryResponse, tags=["History"])
+async def update_play_history(
+    entry_id: UUID,
+    update_data: schemas.PlayHistoryUpdate,
     session: AsyncSession = Depends(get_async_session),
     user_data: tuple[str, UUID] = Depends(get_current_user)
 ):
     _, user_id = user_data
-    history = await crud.get_recent_play_history(session, user_id, limit)
+    updated_entry = await crud.update_play_history(
+        session, user_id, entry_id, update_data.played_duration
+    )
+    return updated_entry
+
+@app.get("/history", response_model=List[schemas.PlayHistoryResponse], tags=["History"])
+async def get_history(
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_async_session),
+    user_data: tuple[str, UUID] = Depends(get_current_user)
+):
+    _, user_id = user_data
+    history = await crud.get_recent_play_history(session, user_id, limit=20, offset=offset)
     return history
 
 
-# ─────────── ALBUMS ROUTES ─────────── #
-
-# Создать альбом
+# ─────────── ALBUM ROUTES ─────────── #
 # @app.post("/albums", response_model=schemas.AlbumResponse, tags=["Albums"])
 # async def create_album(
 #     title: str = Form(...),
@@ -425,8 +442,6 @@ async def get_history(
 #
 #     return await crud.create_album(db, album_data, cover_file)
 #
-#
-# # Получить список альбомов
 # @app.get("/albums", response_model=list[schemas.AlbumResponse], tags=["Albums"])
 # async def get_albums(
 #     skip: int = 0,
@@ -435,8 +450,6 @@ async def get_history(
 # ):
 #     return await crud.get_albums(session, skip, limit)
 #
-#
-# # Получить альбом по ID
 # @app.get("/albums/{album_id}", response_model=schemas.AlbumResponse, tags=["Albums"])
 # async def get_album(
 #     album_id: UUID,
@@ -447,8 +460,6 @@ async def get_history(
 #         raise HTTPException(status_code=404, detail="Album not found")
 #     return album
 #
-#
-# # Обновить альбом
 # @app.put("/albums/{album_id}", response_model=schemas.AlbumResponse, tags=["Albums"])
 # async def update_album(
 #     album_id: UUID,
@@ -460,8 +471,6 @@ async def get_history(
 #         raise HTTPException(status_code=404, detail="Album not found")
 #     return album
 #
-#
-# # Удалить альбом
 # @app.delete("/albums/{album_id}", tags=["Albums"])
 # async def delete_album(
 #     album_id: UUID,

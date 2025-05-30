@@ -59,6 +59,25 @@ services:
       timeout: 5s
       retries: 3
 
+  celery_worker:
+    build:
+      context: ../services/analytics_service
+      dockerfile: Dockerfile
+    command: celery -A app.broker.celery.celery_worker worker --loglevel=info
+    depends_on:
+      - redis
+      - analytics-service
+
+  celery_beat:
+    build:
+      context: ../services/analytics_service
+      dockerfile: Dockerfile
+    command: celery -A app.broker.celery.celery_beat beat --loglevel=info
+    depends_on:
+      - redis
+      - analytics-service
+
+
   policy-enforcement-service:
     build:
       context: ../services/policy_enforcer

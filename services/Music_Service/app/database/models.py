@@ -79,6 +79,7 @@ class PlayHistory(Base):
     user_id = Column(UUID(as_uuid=True), nullable=False)
     track_id = Column(UUID(as_uuid=True), ForeignKey("music.tracks.id", ondelete="CASCADE"), nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    played_duration = Column(Float, nullable=True)
 
     track = relationship("Track", lazy="selectin")
 

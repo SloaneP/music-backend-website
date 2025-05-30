@@ -1,5 +1,8 @@
+import asyncio
 import os
 import random
+import time
+import urllib
 import uuid
 
 import redis.asyncio as redis
@@ -13,24 +16,22 @@ from fastapi import HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, or_, String
 from sqlalchemy.orm import joinedload
 
 from . import schemas
 from .database import models
 
-from .storage import upload_files
+from .storage import extract_duration, delete_file, upload_files
 from .storage import STORAGE_BASE_URL
 
-# Получение трека по ID
+# ─────────── TRACK ─────────── #
 async def get_track(db: AsyncSession, track_id: UUID) -> models.Track | None:
     result = await db.execute(
         select(models.Track).where(models.Track.id == track_id)
     )
     return result.scalar_one_or_none()
 
-
-# Получение списка треков с пагинацией
 async def get_tracks(
     db: AsyncSession, skip: int = 0, limit: int = 100
 ) -> list[schemas.TrackResponse]:
@@ -46,16 +47,6 @@ async def get_tracks(
             track.cover_url = STORAGE_BASE_URL + track.cover_url
 
     return tracks
-
-
-# Получение случайного трека
-# async def get_random_track(db: AsyncSession) -> models.Track | None:
-#     result = await db.execute(select(models.Track).order_by(func.random()).limit(1))
-#     track = result.scalars().first()
-#
-#     if track:
-#         return track
-#     return None
 
 # Redis (кэширование)
 r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
@@ -99,75 +90,67 @@ async def get_random_track(db: AsyncSession, user_id: UUID | None = None) -> sch
 
     return None
 
-# async def get_random_track(db: AsyncSession, user_id: str) -> schemas.TrackResponse | None:
-#     user_tracks_key = f"user:{user_id}:tracks"
+# async def create_track_with_files(
+#     db: AsyncSession,
+#     track_data: schemas.TrackCreate,
+#     files: list[UploadFile]
+# ) -> models.Track:
+#     if len(files) != 2:
+#         raise HTTPException(status_code=400, detail="Exactly two files (audio and cover) must be provided.")
 #
-#     tracks = await r.smembers(user_tracks_key)
+#     audio_file = next((f for f in files if f.filename.lower().endswith(".mp3")), None)
+#     if not audio_file:
+#         raise HTTPException(status_code=400, detail="MP3 file is required.")
 #
-#     if not tracks:
-#         result = await db.execute(select(models.Track))
-#         tracks = result.scalars().all()
+#     duration = await extract_duration(audio_file)
 #
-#         for track in tracks:
-#             track_id_str = str(track.id)
-#             await r.sadd(user_tracks_key, track_id_str)
+#     uploaded_urls = await upload_files_async(files)
 #
-#         tracks = await r.smembers(user_tracks_key)
+#     if "track_url" not in uploaded_urls or "cover_url" not in uploaded_urls:
+#         raise HTTPException(status_code=400, detail="Both audio and cover files must be uploaded.")
 #
-#     random_track_id_str = random.choice(list(tracks))
+#     new_track = models.Track(
+#         title=track_data.title,
+#         artist=track_data.artist,
+#         duration=duration,
+#         genre=track_data.genre,
+#         mood=track_data.mood,
+#         release_year=track_data.release_year,
+#         track_url=uploaded_urls["track_url"],
+#         cover_url=uploaded_urls["cover_url"]
+#     )
 #
-#     print(f"Random track ID for user {user_id} from Redis: {random_track_id_str}")
-#
-#     try:
-#         random_track_id = uuid.UUID(random_track_id_str)
-#     except ValueError as e:
-#         raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
-#
-#     track = await get_track(db, random_track_id)
-#
-#     if track:
-#         await r.srem(user_tracks_key, random_track_id_str)
-#         return schemas.TrackResponse.from_orm(track)
-#     return None
+#     db.add(new_track)
+#     await db.commit()
+#     await db.refresh(new_track)
+#     return new_track
+
 
 async def create_track_with_files(
     db: AsyncSession,
     track_data: schemas.TrackCreate,
-    files: list
+    files: list[UploadFile]
 ) -> models.Track:
-    # Ограничение на 2 файла (один аудио, одна обложка)
     if len(files) != 2:
         raise HTTPException(status_code=400, detail="Exactly two files (audio and cover) must be provided.")
 
-    uploaded_urls = await upload_files(files)
+    audio_file = next((f for f in files if f.filename.lower().endswith(".mp3")), None)
+    if not audio_file:
+        raise HTTPException(status_code=400, detail="MP3 file is required.")
 
-    track_url = uploaded_urls.get("track_url")
-    cover_url = uploaded_urls.get("cover_url")
+    t1 = time.perf_counter()
+    duration = await extract_duration(audio_file)
+    t2 = time.perf_counter()
+    print(f"Duration extraction took {t2 - t1:.2f} seconds")
 
-    if not track_url or not cover_url:
+    upload_results = await upload_files(files)
+    t3 = time.perf_counter()
+    print(f"File upload took {t3 - t2:.2f} seconds")
+
+    uploaded_urls = upload_results
+
+    if "track_url" not in uploaded_urls or "cover_url" not in uploaded_urls:
         raise HTTPException(status_code=400, detail="Both audio and cover files must be uploaded.")
-
-    audio_file_path = track_url.replace(STORAGE_BASE_URL, "")
-
-    try:
-        with NamedTemporaryFile(delete=False) as temp_audio_file:
-            temp_audio_file_path = temp_audio_file.name
-            response = requests.get(track_url)
-            if response.status_code == 200:
-                temp_audio_file.write(response.content)
-            else:
-                raise HTTPException(status_code=500, detail="Failed to download the audio file")
-
-        try:
-            audio = MP3(temp_audio_file_path)
-            duration = audio.info.length
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to read duration from audio file: {e}")
-        finally:
-            os.remove(temp_audio_file_path)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing audio file: {e}")
 
     new_track = models.Track(
         title=track_data.title,
@@ -176,8 +159,8 @@ async def create_track_with_files(
         genre=track_data.genre,
         mood=track_data.mood,
         release_year=track_data.release_year,
-        track_url=track_url,
-        cover_url=cover_url
+        track_url=uploaded_urls["track_url"],
+        cover_url=uploaded_urls["cover_url"]
     )
 
     db.add(new_track)
@@ -185,8 +168,61 @@ async def create_track_with_files(
     await db.refresh(new_track)
     return new_track
 
+# async def create_track_with_files(
+#     db: AsyncSession,
+#     track_data: schemas.TrackCreate,
+#     files: list
+# ) -> models.Track:
+#     # Ограничение на 2 файла (один аудио, одна обложка)
+#     if len(files) != 2:
+#         raise HTTPException(status_code=400, detail="Exactly two files (audio and cover) must be provided.")
+#
+#     uploaded_urls = await upload_files(files)
+#
+#     track_url = uploaded_urls.get("track_url")
+#     cover_url = uploaded_urls.get("cover_url")
+#
+#     if not track_url or not cover_url:
+#         raise HTTPException(status_code=400, detail="Both audio and cover files must be uploaded.")
+#
+#     audio_file_path = track_url.replace(STORAGE_BASE_URL, "")
+#
+#     try:
+#         with NamedTemporaryFile(delete=False) as temp_audio_file:
+#             temp_audio_file_path = temp_audio_file.name
+#             response = requests.get(track_url)
+#             if response.status_code == 200:
+#                 temp_audio_file.write(response.content)
+#             else:
+#                 raise HTTPException(status_code=500, detail="Failed to download the audio file")
+#
+#         try:
+#             audio = MP3(temp_audio_file_path)
+#             duration = audio.info.length
+#         except Exception as e:
+#             raise HTTPException(status_code=500, detail=f"Failed to read duration from audio file: {e}")
+#         finally:
+#             os.remove(temp_audio_file_path)
+#
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error processing audio file: {e}")
+#
+#     new_track = models.Track(
+#         title=track_data.title,
+#         artist=track_data.artist,
+#         duration=duration,
+#         genre=track_data.genre,
+#         mood=track_data.mood,
+#         release_year=track_data.release_year,
+#         track_url=track_url,
+#         cover_url=cover_url
+#     )
+#
+#     db.add(new_track)
+#     await db.commit()
+#     await db.refresh(new_track)
+#     return new_track
 
-# Обновление существующего трека
 async def update_track(
         db: AsyncSession, track_id: UUID, track_in: schemas.TrackUpdate, email: str
 ) -> models.Track | None:
@@ -209,10 +245,7 @@ async def update_track(
     await db.refresh(track)
     return track
 
-
-# Удаление трека
 async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
-    # Получаем трек
     result = await db.execute(
         select(models.Track).where(models.Track.id == track_id)
     )
@@ -221,15 +254,88 @@ async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
     if track is None:
         return False
 
-    # TODO: Добавить проверку на владельца трека (в будущем)
+    # TODO: Проверка владельца трека
     # if track.owner_id != user_id:
     #     raise HTTPException(status_code=403, detail="You do not have permission to delete this track")
+
+    def extract_key(url: str) -> str:
+        return urllib.parse.unquote(url.replace(STORAGE_BASE_URL, ""))
+
+    track_key = extract_key(track.track_url)
+    cover_key = extract_key(track.cover_url)
+
+    delete_file(track_key)
+    delete_file(cover_key)
 
     await db.delete(track)
     await db.commit()
     return True
 
-### Playlist
+# async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
+#     result = await db.execute(
+#         select(models.Track).where(models.Track.id == track_id)
+#     )
+#     track = result.scalar_one_or_none()
+#
+#     if track is None:
+#         return False
+#
+#     # TODO: Добавить проверку на владельца трека (в будущем)
+#     # if track.owner_id != user_id:
+#     #     raise HTTPException(status_code=403, detail="You do not have permission to delete this track")
+#
+#     await db.delete(track)
+#     await db.commit()
+#     return True
+
+
+# ─────────── SEARCH ─────────── #
+async def search_tracks(
+    db: AsyncSession,
+    query: str,
+    search_in: Optional[List[str]] = None,  # например: ["title"], ["artist"], ["title", "artist"], или None для всех
+    skip: int = 0,
+    limit: int = 20,
+) -> list[schemas.TrackResponse]:
+    if not query:
+        return []
+
+    if search_in is None or not search_in:
+        # если параметр не передан, ищем по всем полям
+        search_in = ["title", "artist", "genre", "mood"]
+
+    conditions = []
+
+    if "title" in search_in:
+        conditions.append(models.Track.title.ilike(f"%{query}%"))
+    if "artist" in search_in:
+        conditions.append(models.Track.artist.ilike(f"%{query}%"))
+    if "genre" in search_in:
+        conditions.append(models.Track.genre.cast(String).ilike(f"%{query}%"))
+    if "mood" in search_in:
+        conditions.append(models.Track.mood.cast(String).ilike(f"%{query}%"))
+
+    stmt = (
+        select(models.Track)
+        .where(or_(*conditions))
+        .order_by(models.Track.title)
+        .offset(skip)
+        .limit(limit)
+    )
+
+    result = await db.execute(stmt)
+    tracks = result.scalars().all()
+
+    for track in tracks:
+        if not track.track_url.startswith("http"):
+            track.track_url = STORAGE_BASE_URL + track.track_url
+        if track.cover_url and not track.cover_url.startswith("http"):
+            track.cover_url = STORAGE_BASE_URL + track.cover_url
+
+    return [schemas.TrackResponse.from_orm(track) for track in tracks]
+
+
+# ─────────── PLAYLIST ─────────── #
 async def create_playlist(db: AsyncSession, playlist_data: schemas.PlaylistCreate, user_id: UUID) -> models.Playlist:
     playlist = models.Playlist(
         name=playlist_data.name,
@@ -305,9 +411,7 @@ async def delete_playlist(db: AsyncSession, playlist_id: UUID, user_id: UUID) ->
     return True
 
 
-
 # ─────────── FAVORITES ─────────── #
-
 async def add_to_favorites(db: AsyncSession, user_id: UUID, track_id: UUID) -> models.FavoriteTrack:
     favorite = models.FavoriteTrack(user_id=user_id, track_id=track_id)
     db.add(favorite)
@@ -336,126 +440,146 @@ async def get_user_favorites(db: AsyncSession, user_id: UUID) -> list[models.Tra
     )
     return result.scalars().all()
 
-# ─────────── PLAY HISTORY ─────────── #
 
-async def add_play_history(db: AsyncSession, user_id: UUID, track_id: UUID) -> schemas.PlayHistoryResponse:
-    # Проверяем, не превышен ли лимит (100 записей)
-    history_count = await db.execute(
-        select(func.count(models.PlayHistory.id))
-        .where(models.PlayHistory.user_id == user_id)
+# ─────────── PLAY HISTORY ─────────── #
+async def add_play_history(
+    db: AsyncSession, user_id: UUID, track_id: UUID
+) -> models.PlayHistory:
+    track_exists = await db.execute(
+        select(models.Track.id).where(models.Track.id == track_id)
     )
-    if history_count.scalar() >= 100:
-        # Удаляем самый старый трек
-        oldest_entry = await db.execute(
+    if not track_exists.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    count_result = await db.execute(
+        select(func.count(models.PlayHistory.id)).where(models.PlayHistory.user_id == user_id)
+    )
+    history_count = count_result.scalar_one() or 0
+    if history_count >= 20:
+        oldest_result = await db.execute(
             select(models.PlayHistory)
             .where(models.PlayHistory.user_id == user_id)
             .order_by(models.PlayHistory.timestamp.asc())
             .limit(1)
         )
-        oldest_entry = oldest_entry.scalar_one_or_none()
+        oldest_entry = oldest_result.scalar_one_or_none()
         if oldest_entry:
             await db.delete(oldest_entry)
 
-    # Добавляем новый трек
-    history = models.PlayHistory(user_id=user_id, track_id=track_id)
-    db.add(history)
+    new_entry = models.PlayHistory(user_id=user_id, track_id=track_id)
+    db.add(new_entry)
     await db.commit()
-    await db.refresh(history)
-    return history
+    await db.refresh(new_entry)
+    return new_entry
 
+async def update_play_history(
+    db: AsyncSession, user_id: UUID, entry_id: UUID, played_duration: float
+) -> models.PlayHistory:
+    result = await db.execute(
+        select(models.PlayHistory)
+        .where(models.PlayHistory.id == entry_id)
+        .where(models.PlayHistory.user_id == user_id)
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="History entry not found")
 
-async def get_recent_play_history(db: AsyncSession, user_id: UUID, limit: int = 10) -> list[schemas.PlayHistoryResponse]:
+    entry.played_duration = played_duration
+    await db.commit()
+    await db.refresh(entry)
+    return entry
+
+async def get_recent_play_history(
+    db: AsyncSession,
+    user_id: UUID,
+    limit: int = 20,
+    offset: int = 0
+) -> list[schemas.PlayHistoryResponse]:
     result = await db.execute(
         select(models.PlayHistory)
         .where(models.PlayHistory.user_id == user_id)
         .order_by(models.PlayHistory.timestamp.desc())
+        .offset(offset)
         .limit(limit)
         .options(joinedload(models.PlayHistory.track))
     )
     return result.scalars().all()
 
-### Album
+# ─────────── ALBUM ─────────── #
 
-# Создание альбома
-async def create_album(
-    db: AsyncSession,
-    album_data: schemas.AlbumCreate,
-    cover_file: Optional[UploadFile]
-):
-    album = models.Album(
-        title=album_data.title,
-        artist=album_data.artist,
-        release_year=album_data.release_year
-    )
-
-    # Обработка обложки
-    if cover_file:
-        uploaded = await upload_files([cover_file])
-        album.cover_url = uploaded.get("cover_url")
-
-    # Добавление треков (если переданы)
-    if album_data.track_ids:
-        result = await db.execute(select(models.Track).where(models.Track.id.in_(album_data.track_ids)))
-        album.tracks = result.scalars().all()
-
-    db.add(album)
-    await db.commit()
-    await db.refresh(album)
-
-    return album
-
-
-# Получение одного альбома
-async def get_album(db: AsyncSession, album_id: UUID) -> models.Album | None:
-    result = await db.execute(
-        select(models.Album).options(joinedload(models.Album.tracks)).where(models.Album.id == album_id))
-    return result.unique().scalar_one_or_none()
-
-# Получение всех альбомов
-async def get_albums(db: AsyncSession, skip: int = 0, limit: int = 100) -> List[models.Album]:
-    result = await db.execute(select(models.Album).offset(skip).limit(limit))
-    return result.scalars().all()
-
-
-# Обновление альбома
-async def update_album(db: AsyncSession, album_id: UUID, album_in: schemas.AlbumUpdate) -> models.Album | None:
-    result = await db.execute(select(models.Album).where(models.Album.id == album_id))
-    album = result.scalar_one_or_none()
-    if not album:
-        return None
-
-    for field, value in album_in.dict(exclude_unset=True).items():
-        setattr(album, field, value)
-
-    await db.commit()
-    await db.refresh(album)
-    return album
-
-
-# Удаление альбома
-async def delete_album(db: AsyncSession, album_id: UUID) -> bool:
-    result = await db.execute(select(models.Album).where(models.Album.id == album_id))
-    album = result.scalar_one_or_none()
-    if not album:
-        return False
-
-    # Обнуляем связи с альбомом у треков
-    for track in album.tracks:
-        track.albums.remove(album)
-
-    await db.delete(album)
-    await db.commit()
-    return True
-
-
-
-async def upload_album_cover(file: UploadFile) -> str:
-    """Загружает обложку альбома через общую функцию upload_files и возвращает URL."""
-
-    uploaded = await upload_files([file])
-
-    cover_url = uploaded.get("cover_url")
-    if not cover_url:
-        raise HTTPException(status_code=400, detail="Cover file must be an image (jpg/jpeg/png)")
-
-    return cover_url
+# async def create_album(
+#     db: AsyncSession,
+#     album_data: schemas.AlbumCreate,
+#     cover_file: Optional[UploadFile]
+# ):
+#     album = models.Album(
+#         title=album_data.title,
+#         artist=album_data.artist,
+#         release_year=album_data.release_year
+#     )
+#
+#     if cover_file:
+#         uploaded = await upload_files([cover_file])
+#         album.cover_url = uploaded.get("cover_url")
+#
+#     if album_data.track_ids:
+#         result = await db.execute(select(models.Track).where(models.Track.id.in_(album_data.track_ids)))
+#         album.tracks = result.scalars().all()
+#
+#     db.add(album)
+#     await db.commit()
+#     await db.refresh(album)
+#
+#     return album
+#
+#
+# async def get_album(db: AsyncSession, album_id: UUID) -> models.Album | None:
+#     result = await db.execute(
+#         select(models.Album).options(joinedload(models.Album.tracks)).where(models.Album.id == album_id))
+#     return result.unique().scalar_one_or_none()
+#
+# async def get_albums(db: AsyncSession, skip: int = 0, limit: int = 100) -> List[models.Album]:
+#     result = await db.execute(select(models.Album).offset(skip).limit(limit))
+#     return result.scalars().all()
+#
+#
+# async def update_album(db: AsyncSession, album_id: UUID, album_in: schemas.AlbumUpdate) -> models.Album | None:
+#     result = await db.execute(select(models.Album).where(models.Album.id == album_id))
+#     album = result.scalar_one_or_none()
+#     if not album:
+#         return None
+#
+#     for field, value in album_in.dict(exclude_unset=True).items():
+#         setattr(album, field, value)
+#
+#     await db.commit()
+#     await db.refresh(album)
+#     return album
+#
+#
+#
+# async def delete_album(db: AsyncSession, album_id: UUID) -> bool:
+#     result = await db.execute(select(models.Album).where(models.Album.id == album_id))
+#     album = result.scalar_one_or_none()
+#     if not album:
+#         return False
+#
+#     for track in album.tracks:
+#         track.albums.remove(album)
+#
+#     await db.delete(album)
+#     await db.commit()
+#     return True
+#
+#
+#
+# async def upload_album_cover(file: UploadFile) -> str:
+#     """Загружает обложку альбома через общую функцию upload_files и возвращает URL."""
+#
+#     uploaded = await upload_files([file])
+#
+#     cover_url = uploaded.get("cover_url")
+#     if not cover_url:
+#         raise HTTPException(status_code=400, detail="Cover file must be an image (jpg/jpeg/png)")
+#
+#     return cover_url
