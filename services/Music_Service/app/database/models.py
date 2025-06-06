@@ -1,7 +1,7 @@
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
-from sqlalchemy import Column, String, Integer, Float, Table, ForeignKey, DateTime, func, UniqueConstraint
+from sqlalchemy import Column, String, Integer, Float, Table, ForeignKey, DateTime, func, UniqueConstraint, Boolean
 from sqlalchemy.orm import relationship
 
 from .database import Base, SCHEMA
@@ -60,8 +60,10 @@ class Playlist(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
-    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-
+    # user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    is_public = Column(Boolean, default=False)
+    cover_url = Column(String, nullable=True)
 
     tracks = relationship(
         "Track",

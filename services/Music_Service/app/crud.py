@@ -7,7 +7,7 @@ import uuid
 
 import redis.asyncio as redis
 from tempfile import NamedTemporaryFile
-from typing import List, Optional
+from typing import List, Optional, Union
 from uuid import UUID
 import requests
 from mutagen.mp3 import MP3
@@ -245,6 +245,9 @@ async def update_track(
     await db.refresh(track)
     return track
 
+def extract_key(url: str) -> str:
+        return urllib.parse.unquote(url.replace(STORAGE_BASE_URL, ""))
+
 async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
     result = await db.execute(
         select(models.Track).where(models.Track.id == track_id)
@@ -257,9 +260,6 @@ async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
     # TODO: Проверка владельца трека
     # if track.owner_id != user_id:
     #     raise HTTPException(status_code=403, detail="You do not have permission to delete this track")
-
-    def extract_key(url: str) -> str:
-        return urllib.parse.unquote(url.replace(STORAGE_BASE_URL, ""))
 
     track_key = extract_key(track.track_url)
     cover_key = extract_key(track.cover_url)
@@ -336,21 +336,37 @@ async def search_tracks(
 
 
 # ─────────── PLAYLIST ─────────── #
-async def create_playlist(db: AsyncSession, playlist_data: schemas.PlaylistCreate, user_id: UUID) -> models.Playlist:
-    playlist = models.Playlist(
-        name=playlist_data.name,
+async def create_playlist_with_cover(
+    db: AsyncSession,
+    name: str,
+    is_public: bool,
+    user_id: UUID,
+    files: list[UploadFile]
+) -> models.Playlist:
+    if len(files) != 1:
+        raise HTTPException(status_code=400, detail="Exactly one image file must be provided.")
+
+    image_file = next((f for f in files if f.filename.lower().endswith((".jpg", ".jpeg", ".png"))), None)
+    if not image_file:
+        raise HTTPException(status_code=400, detail="Image file (.jpg/.jpeg/.png) is required.")
+
+    upload_results = await upload_files(files)
+
+    if "cover_url" not in upload_results:
+        raise HTTPException(status_code=400, detail="Cover upload failed.")
+
+    new_playlist = models.Playlist(
+        name=name,
+        is_public=is_public,
+        cover_url=upload_results["cover_url"],
         user_id=user_id
     )
-    db.add(playlist)
-    await db.commit()
-    await db.refresh(playlist)
-    return playlist
 
-async def get_playlists(db: AsyncSession) -> list[models.Playlist]:
-    result = await db.execute(
-        select(models.Playlist).options(joinedload(models.Playlist.tracks))
-    )
-    return result.unique().scalars().all()
+    db.add(new_playlist)
+    await db.commit()
+    await db.refresh(new_playlist)
+    return new_playlist
+
 
 async def get_user_playlists(db: AsyncSession, user_id: UUID) -> list[models.Playlist]:
     result = await db.execute(
@@ -360,13 +376,92 @@ async def get_user_playlists(db: AsyncSession, user_id: UUID) -> list[models.Pla
     )
     return list(result.scalars().unique())
 
+async def get_public_playlists(db: AsyncSession) -> list[models.Playlist]:
+    result = await db.execute(
+        select(models.Playlist)
+        .where(models.Playlist.is_public == True)
+        .options(joinedload(models.Playlist.tracks))
+    )
+    return result.unique().scalars().all()
+
 async def get_playlist(db: AsyncSession, playlist_id: UUID, user_id: UUID) -> Optional[models.Playlist]:
     result = await db.execute(
         select(models.Playlist)
         .where(models.Playlist.id == playlist_id)
-        .where(models.Playlist.user_id == user_id)
+        .options(joinedload(models.Playlist.tracks))
     )
-    return result.scalar_one_or_none()
+    playlist = result.unique().scalar_one_or_none()
+
+    if playlist is None:
+        return None
+
+    if playlist.user_id != user_id and not playlist.is_public:
+        return None
+
+    return playlist
+
+async def update_playlist(
+    db: AsyncSession,
+    playlist_id: UUID,
+    user_id: UUID,
+    data: schemas.PlaylistUpdate,
+    user_role: str
+) -> Optional[models.Playlist]:
+    result = await db.execute(
+        select(models.Playlist).where(models.Playlist.id == playlist_id)
+    )
+    playlist = result.scalar_one_or_none()
+    if not playlist:
+        return None
+
+    if user_role != "Administrator" and playlist.user_id != user_id:
+        return None
+
+    update_data = data.dict(exclude_unset=True)
+    if user_role != "Administrator":
+        update_data.pop("is_public", None)
+
+    for key, value in update_data.items():
+        setattr(playlist, key, value)
+
+    await db.commit()
+    await db.refresh(playlist)
+    return playlist
+
+async def update_playlist_cover_with_file(
+    db: AsyncSession,
+    playlist_id: UUID,
+    user_id: UUID,
+    file: UploadFile,
+    user_role: str
+) -> models.Playlist:
+    ext = file.filename.lower().split(".")[-1]
+    if ext not in ["jpg", "jpeg", "png"]:
+        raise HTTPException(status_code=400, detail="Only JPG or PNG files are allowed.")
+
+    result = await db.execute(select(models.Playlist).where(models.Playlist.id == playlist_id))
+    playlist = result.scalar_one_or_none()
+
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    if user_role != "Administrator" and playlist.user_id != user_id:
+        raise HTTPException(status_code=403, detail="You do not have permission to edit this playlist")
+
+    upload_result = await upload_files([file])
+    new_cover_url = upload_result.get("cover_url")
+
+    if not new_cover_url:
+        raise HTTPException(status_code=400, detail="Cover upload failed.")
+
+    if playlist.cover_url:
+        old_key = extract_key(playlist.cover_url)
+        delete_file(old_key)
+
+    playlist.cover_url = new_cover_url
+    await db.commit()
+    await db.refresh(playlist)
+    return playlist
 
 async def add_track_to_playlist(db: AsyncSession, playlist_id: UUID, track_id: UUID, user_id: UUID) -> schemas.PlaylistRead:
     playlist = await get_playlist(db, playlist_id, user_id)

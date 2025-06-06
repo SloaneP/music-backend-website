@@ -6,7 +6,7 @@ from uuid import UUID
 
 import redis
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, Query, Request, status
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, Query, Request, status, Body
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,40 +102,43 @@ async def get_current_user(request: Request) -> tuple[str, UUID] | None:
 
     return email, user_id
 
-# async def get_current_user(request: Request) -> tuple[str, UUID]:
-#     auth_header = request.headers.get("authorization")
-#     logger.info(f"Authorization header: {auth_header}")
-#
-#     if not auth_header or not auth_header.startswith("Bearer "):
-#         logger.warning("Authorization header missing or invalid")
-#         raise HTTPException(
-#             status_code=status.HTTP_401_UNAUTHORIZED,
-#             detail="Authorization header missing or invalid",
-#             headers={"WWW-Authenticate": "Bearer"},
-#         )
-#
-#     token = auth_header.split(" ")[1]
-#     logger.info(f"Extracted token: {token}")
-#
-#     user_data = extract_email_data(token)
-#     logger.info(f"Extracted user data: {user_data}")
-#
-#     if not user_data:
-#         logger.warning("Invalid or expired token")
-#         raise HTTPException(
-#             status_code=status.HTTP_401_UNAUTHORIZED,
-#             detail="Invalid or expired token",
-#             headers={"WWW-Authenticate": "Bearer"},
-#         )
-#
-#     email, user_id = user_data
-#     logger.info(f"Authenticated user: {email} (ID: {user_id})")
-#     return email, user_id
 
-# @app.post("/tracks/play", tags=["Tracks"])
-# async def track_play(event: dict):
-#     await send_track_play_event(event)
-#     return {"status": "ok"}
+ROLE_MAP = {
+    "0": "DefaultUser",
+    "1": "User",
+    "2": "Artist",
+    "3": "Administrator"
+}
+
+def get_role_from_token(token: str) -> str:
+    try:
+        data = jwt.decode(
+            token,
+            cfg.JWT_SECRET,
+            algorithms=["HS256"],
+            audience=["fastapi-users:auth"]
+        )
+        group_id = data.get("group_id", 0)
+        return ROLE_MAP.get(str(group_id), "DefaultUser")
+    except jwt.ExpiredSignatureError:
+        logger.error("Token expired")
+    except jwt.InvalidTokenError as e:
+        logger.error(f"Invalid token: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error while decoding token: {e}")
+    return "DefaultUser"
+
+async def get_user_role(request: Request) -> str:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return "DefaultUser"
+    token = auth_header.split(" ")[1]
+    try:
+        data = jwt.decode(token, cfg.JWT_SECRET, algorithms=["HS256"], audience=["fastapi-users:auth"])
+        group_id = data.get("group_id", 0)
+        return ROLE_MAP.get(str(group_id), "DefaultUser")
+    except Exception:
+        return "DefaultUser"
 
 @app.get("/", include_in_schema=False)
 async def root():
@@ -294,22 +297,59 @@ async def delete_from_cloud(file_path: str):
 
 
 # ─────────── PLAYLISTS ROUTES ─────────── #
-@app.post("/playlists", response_model=schemas.PlaylistRead, tags=["Playlists"])
-async def create_playlist(
-    data: schemas.PlaylistCreate,
+@app.post("/playlists/with-cover", response_model=schemas.PlaylistRead, tags=["Playlists"])
+async def create_playlist_with_cover_route(
+    name: str = Form(...),
+    is_public: Optional[bool] = Form(False),
+    files: List[UploadFile] = File(...),
     session: AsyncSession = Depends(get_async_session),
-    user_data: tuple[str, UUID] = Depends(get_current_user)
+    user_data: tuple[str, UUID] = Depends(get_current_user),
+    role: str = Depends(get_user_role)
 ):
-    email, user_id = user_data
-    return await crud.create_playlist(session, data, user_id)
+    _, user_id = user_data
+
+    if role != "Administrator":
+        is_public = False
+
+    return await crud.create_playlist_with_cover(
+        db=session,
+        name=name,
+        is_public=is_public,
+        user_id=user_id,
+        files=files
+    )
+
+@app.put("/playlists/{playlist_id}/cover", response_model=schemas.PlaylistRead, tags=["Playlists"])
+async def update_playlist_cover_route(
+    playlist_id: UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_async_session),
+    user_data: tuple[str, UUID] = Depends(get_current_user),
+    role: str = Depends(get_user_role)
+):
+    _, user_id = user_data
+
+    return await crud.update_playlist_cover_with_file(
+        db=session,
+        playlist_id=playlist_id,
+        user_id=user_id,
+        file=file,
+        user_role=role
+    )
 
 @app.get("/playlists", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
-async def list_playlists(
+async def list_user_playlists(
     session: AsyncSession = Depends(get_async_session),
     user_data: tuple[str, UUID] = Depends(get_current_user)
 ):
     _, user_id = user_data
     return await crud.get_user_playlists(session, user_id)
+
+@app.get("/playlists/public", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
+async def list_public_playlists(
+    session: AsyncSession = Depends(get_async_session)
+):
+    return await crud.get_public_playlists(session)
 
 @app.get("/playlists/{playlist_id}", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def get_playlist(
@@ -322,6 +362,25 @@ async def get_playlist(
     if not playlist:
         raise HTTPException(404, detail="Playlist not found or access denied")
     return playlist
+
+@app.put("/playlists/{playlist_id}", response_model=schemas.PlaylistRead, tags=["Playlists"])
+async def update_playlist(
+    playlist_id: UUID,
+    data: schemas.PlaylistUpdate,
+    session: AsyncSession = Depends(get_async_session),
+    user_data: tuple[str, UUID] = Depends(get_current_user),
+    role: str = Depends(get_user_role)
+):
+    _, user_id = user_data
+
+    if role != "Administrator" and data.is_public is not None:
+        data.is_public = None
+
+    playlist = await crud.update_playlist(session, playlist_id, user_id, data, role)
+    if not playlist:
+        raise HTTPException(404, detail="Playlist not found or access denied")
+    return playlist
+
 
 @app.post("/playlists/{playlist_id}/tracks/{track_id}", tags=["Playlists"])
 async def add_track(
@@ -349,11 +408,12 @@ async def delete_playlist(
     session: AsyncSession = Depends(get_async_session),
     user_data: tuple[str, UUID] = Depends(get_current_user)
 ):
-    email, user_id = user_data
+    _, user_id = user_data
     success = await crud.delete_playlist(session, playlist_id, user_id)
     if not success:
         raise HTTPException(404, detail="Playlist not found")
     return {"message": "Playlist deleted"}
+
 
 
 # ─────────── FAVORITES ROUTES ─────────── #

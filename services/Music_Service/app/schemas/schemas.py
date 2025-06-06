@@ -50,19 +50,21 @@ class PlaylistBase(BaseModel):
     name: str
 
 class PlaylistCreate(PlaylistBase):
-    pass
+    is_public: Optional[bool] = False
+    cover_url: Optional[str] = None
 
 class PlaylistRead(PlaylistBase):
     id: UUID
+    cover_url: Optional[str] = None
     tracks: List[TrackResponse] = []
-    # track_ids: List[UUID] = []
 
     class Config:
         from_attributes = True
 
-
 class PlaylistUpdate(BaseModel):
     name: Optional[str] = None
+    is_public: Optional[bool] = None
+    cover_url: Optional[str] = None
 
 class FavoriteTrackCreate(BaseModel):
     user_id: UUID
