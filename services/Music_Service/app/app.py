@@ -1,23 +1,22 @@
-import json
 import logging
+import os
 import time
 from typing import List, Optional
 from uuid import UUID
-
+import aio_pika
+import json
 import redis
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, Query, Request, status, Body
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import config, schemas, crud
-from .broker.rabbitmq_producer import send_track_play_event
 from .database import get_async_session, db_initializer
 from . import storage
 
 from .database.enums import GenreEnum, MoodEnum
-
 
 cfg = config.load_config()
 logger = logging.getLogger(cfg.SERVICE_NAME)
@@ -34,7 +33,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.on_event("startup")
 async def on_startup():
@@ -73,7 +71,6 @@ def extract_email_data(token: str) -> Optional[tuple[str, UUID]]:
     logger.warning("Returning None from extract_email_data")
     return None
 
-r = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
 async def get_current_user(request: Request) -> tuple[str, UUID] | None:
     auth_header = request.headers.get("authorization")
     logger.info(f"Authorization header: {auth_header}")
@@ -94,11 +91,6 @@ async def get_current_user(request: Request) -> tuple[str, UUID] | None:
 
     email, user_id = user_data
     logger.info(f"Authenticated user: {email} (ID: {user_id})")
-
-    r.set(f"user:{user_id}:token", token, ex=3600)
-    current_time = time.time()
-    r.setex(f"user:{user_id}:last_activity", 3600, current_time)
-    r.sadd("active_users", str(user_id))
 
     return email, user_id
 
@@ -164,12 +156,47 @@ async def search_tracks_endpoint(
     results = await crud.search_tracks(session, q, search_in=search_in, skip=skip, limit=limit)
     return results
 
+
+# RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+
+# @app.post("/next-track", tags="Next Track")
+# async def next_track_trigger(request: Request, user_data=Depends(get_current_user)):
+#     if not user_data:
+#         return {"error": "Unauthorized"}, 401
+#
+#     _, user_id = user_data
+#
+#     connection = await aio_pika.connect_robust(RABBITMQ_URL)
+#     async with connection:
+#         channel = await connection.channel()
+#         queue_name = "generate_recommendations"
+#         await channel.declare_queue(queue_name, durable=True)
+#
+#         message_body = json.dumps({"user_id": str(user_id)}).encode()
+#         await channel.default_exchange.publish(
+#             aio_pika.Message(body=message_body),
+#             routing_key=queue_name,
+#         )
+#
+#     return {"message": "Recommendation generation task sent"}
+
+# @app.get("/tracks", response_model=list[schemas.TrackResponse], tags=["Tracks"])
+# async def get_tracks(
+#     skip: int = 0,
+#     limit: int = 100,
+#     session: AsyncSession = Depends(get_async_session)
+# ):
+#     return await crud.get_tracks(session, skip, limit)
+
 @app.get("/tracks", response_model=list[schemas.TrackResponse], tags=["Tracks"])
 async def get_tracks(
+    mood: str | None = Query(None, description="Filter by mood"),
     skip: int = 0,
     limit: int = 100,
     session: AsyncSession = Depends(get_async_session)
 ):
+    if mood:
+        return await crud.get_tracks_by_mood(session, mood, skip, limit)
     return await crud.get_tracks(session, skip, limit)
 
 @app.get("/tracks/{track_id}", response_model=schemas.TrackResponse, tags=["Tracks"])
@@ -181,6 +208,7 @@ async def get_track(
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
     return track
+
 
 # @app.get("/track/random-track", response_model=schemas.TrackResponse, tags=["Tracks"])
 # async def random_track(db: AsyncSession = Depends(get_async_session)):
@@ -297,6 +325,21 @@ async def delete_from_cloud(file_path: str):
 
 
 # ─────────── PLAYLISTS ROUTES ─────────── #
+
+@app.get("/playlists", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
+async def list_user_playlists(
+    session: AsyncSession = Depends(get_async_session),
+    user_data: tuple[str, UUID] = Depends(get_current_user)
+):
+    _, user_id = user_data
+    return await crud.get_user_playlists(session, user_id)
+
+@app.get("/playlists/public", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
+async def list_public_playlists(
+    session: AsyncSession = Depends(get_async_session)
+):
+    return await crud.get_public_playlists(session)
+
 @app.post("/playlists/with-cover", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def create_playlist_with_cover_route(
     name: str = Form(...),
@@ -319,7 +362,7 @@ async def create_playlist_with_cover_route(
         files=files
     )
 
-@app.put("/playlists/{playlist_id}/cover", response_model=schemas.PlaylistRead, tags=["Playlists"])
+@app.put("/playlists/cover/{playlist_id}", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def update_playlist_cover_route(
     playlist_id: UUID,
     file: UploadFile = File(...),
@@ -337,19 +380,6 @@ async def update_playlist_cover_route(
         user_role=role
     )
 
-@app.get("/playlists", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
-async def list_user_playlists(
-    session: AsyncSession = Depends(get_async_session),
-    user_data: tuple[str, UUID] = Depends(get_current_user)
-):
-    _, user_id = user_data
-    return await crud.get_user_playlists(session, user_id)
-
-@app.get("/playlists/public", response_model=list[schemas.PlaylistRead], tags=["Playlists"])
-async def list_public_playlists(
-    session: AsyncSession = Depends(get_async_session)
-):
-    return await crud.get_public_playlists(session)
 
 @app.get("/playlists/{playlist_id}", response_model=schemas.PlaylistRead, tags=["Playlists"])
 async def get_playlist(
@@ -480,6 +510,24 @@ async def get_history(
     history = await crud.get_recent_play_history(session, user_id, limit=20, offset=offset)
     return history
 
+### TODO: В будущем продумать и возможно переделать функции ниже. На текущий момент используются для сервиса Аналитики.
+@app.get("/internal/favorites/{user_id}", response_model=List[schemas.TrackResponse], tags=["Internal"])
+async def get_favorites_internal(
+    user_id: UUID,
+    session: AsyncSession = Depends(get_async_session),
+):
+    return await crud.get_user_favorites(session, user_id)
+
+@app.get("/internal/history/{user_id}", response_model=List[schemas.PlayHistoryResponse], tags=["Internal"])
+async def get_history_internal(
+    user_id: UUID,
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_async_session),
+):
+    history = await crud.get_recent_play_history(session, user_id, limit=20, offset=offset)
+    return history
+
+###
 
 # ─────────── ALBUM ROUTES ─────────── #
 # @app.post("/albums", response_model=schemas.AlbumResponse, tags=["Albums"])

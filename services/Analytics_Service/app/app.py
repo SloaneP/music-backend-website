@@ -1,25 +1,15 @@
-import asyncio
 import logging
 from uuid import UUID
 from typing import Optional
-
 import jwt
 import httpx
-from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from . import config, crud, schemas
+from . import crud
 from .database import db_initializer, get_async_session
 from .config import load_config
-
-from collections import Counter
-from sqlalchemy import select
-from .broker.rabbitmq_producer import send_track_play_event
-from .broker.rabbitmq_consumer import consume_track_play_events
-
-from .broker.fetch_music_service import fetch_favorites, fetch_play_history
 
 cfg = load_config()
 logger = logging.getLogger(cfg.SERVICE_NAME)
@@ -98,79 +88,25 @@ async def root():
 
 # ─────────── FETCH DATA FROM MUSIC_SERVICE ROUTES ─────────── #
 @app.get("/user/analytics/raw-data")
-async def get_raw_data(request: Request, db: AsyncSession = Depends(get_async_session)):
-    token = request.headers.get("authorization")
-
-    if not token or not token.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-
-    token = token.split(" ")[1]
-    user_data = extract_email_data(token)
-
-    if not user_data:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    email, user_id = user_data
-    logger.info(f"Extracted email: {email}, user_id: {user_id}")
-
-    try:
-        play_history = await fetch_play_history(token)
-        favorites = await fetch_favorites(token)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=e.response.status_code,
-            detail=f"Music service error: {e.response.text}"
-        )
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Network error: {str(e)}")
-
-    await crud.update_user_analytics_in_db(db, user_id, play_history, favorites)
-
-    return {
-        "history": play_history,
-        "favorites": favorites
-    }
-
-
-# ─────────── OTHER ROUTES ─────────── #
-@app.get("/user/analytics/{user_id}", response_model=schemas.UserAnalyticsResponse)
-async def get_analytics(user_id: UUID, db: AsyncSession = Depends(get_async_session)):
-    return await crud.get_user_analytics(db, user_id)
-
-
-@app.put("/user/analytics/{user_id}", response_model=schemas.UserAnalyticsResponse)
-async def update_analytics(
-    user_id: UUID,
-    update_data: schemas.UserAnalyticsUpdate,
-    db: AsyncSession = Depends(get_async_session),
+async def get_raw_data(
+    request: Request,
+    user_id: UUID | None = Query(None),
+    internal: bool = Query(False),
+    db: AsyncSession = Depends(get_async_session)
 ):
-    return await crud.upsert_user_analytics(db, user_id, update_data)
+    token = None
+    if not internal:
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        token = auth_header.split(" ")[1]
+        user_data = extract_email_data(token)
+        if not user_data:
+            raise HTTPException(status_code=400, detail="Invalid or expired token")
+        _, user_id = user_data
+    else:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required for internal call")
 
-
-# @app.post("/events/send", status_code=status.HTTP_202_ACCEPTED, tags=["Analytics"])
-# async def track_play_event(
-#     data: schemas.TrackPlayEventCreate,
-# ):
-#     event_data = data.dict()
-#     await send_track_play_event(event_data)
-#     return {"message": "Event sent to analytics."}
-#
-# @app.get("/analytics/user/{user_id}", response_model=schemas.UserAnalyticsResponse, tags=["Analytics"])
-# async def get_user_profile(
-#     user_id: UUID,
-#     session: AsyncSession = Depends(get_async_session)
-# ):
-#     analytics = await crud.get_user_analytics(session, user_id)
-#     if not analytics:
-#         raise HTTPException(404, detail="No analytics found for this user.")
-#     return analytics
-#
-#
-# @app.get("/analytics/user/{user_id}/events", response_model=list[schemas.TrackPlayEventResponse], tags=["Analytics"])
-# async def get_user_events(
-#     user_id: UUID,
-#     session: AsyncSession = Depends(get_async_session)
-# ):
-#     return await crud.get_user_play_events(session, user_id)
-#
-
+    result = await crud.get_and_update_user_analytics(db, user_id, token=token, internal_call=internal)
+    return result

@@ -17,12 +17,6 @@ class Config(BaseSettings):
         alias='FRONT'
     )
 
-    RABBITMQ_DSN: AmqpDsn = Field(
-        default='amqp://guest:guest@rabbitmq//',
-        env='RABBITMQ_DSN',
-        alias='RABBITMQ_DSN'
-    )
-
     JWT_SECRET: str = Field(
         default='JWT_SECRET',
         env='JWT_SECRET',

@@ -11,12 +11,6 @@ class Config(BaseSettings):
         alias='PG_ASYNC_DSN'
     )
 
-    RABBITMQ_DSN: AmqpDsn = Field(
-        default='amqp://guest:guest@rabbitmq//',
-        env='RABBITMQ_DSN',
-        alias='RABBITMQ_DSN'
-    )
-
     FRONT: str = Field(
         default='http://localhost:5173',
         env='FRONT',

@@ -21,6 +21,7 @@ from sqlalchemy.orm import joinedload
 
 from . import schemas
 from .database import models
+from .database.enums import MoodEnum
 
 from .storage import extract_duration, delete_file, upload_files
 from .storage import STORAGE_BASE_URL
@@ -89,6 +90,36 @@ async def get_random_track(db: AsyncSession, user_id: UUID | None = None) -> sch
         return schemas.TrackResponse.from_orm(track)
 
     return None
+
+
+async def get_tracks_by_mood(
+    db: AsyncSession,
+    mood: str | None = None,
+    skip: int = 0,
+    limit: int = 100
+) -> list[schemas.TrackResponse]:
+    query = select(models.Track)
+
+    if mood:
+        try:
+            mood_enum = MoodEnum(mood)
+        except ValueError:
+            return []
+
+        query = query.where(models.Track.mood == mood_enum)
+
+    query = query.offset(skip).limit(limit)
+
+    result = await db.execute(query)
+    tracks = result.scalars().all()
+
+    for track in tracks:
+        if not track.track_url.startswith("http"):
+            track.track_url = STORAGE_BASE_URL + track.track_url
+        if track.cover_url and not track.cover_url.startswith("http"):
+            track.cover_url = STORAGE_BASE_URL + track.cover_url
+
+    return [schemas.TrackResponse.from_orm(track) for track in tracks]
 
 # async def create_track_with_files(
 #     db: AsyncSession,
@@ -293,7 +324,7 @@ async def delete_track(db: AsyncSession, track_id: UUID, user_id: UUID) -> bool:
 async def search_tracks(
     db: AsyncSession,
     query: str,
-    search_in: Optional[List[str]] = None,  # например: ["title"], ["artist"], ["title", "artist"], или None для всех
+    search_in: Optional[List[str]] = None,
     skip: int = 0,
     limit: int = 20,
 ) -> list[schemas.TrackResponse]:
@@ -301,7 +332,6 @@ async def search_tracks(
         return []
 
     if search_in is None or not search_in:
-        # если параметр не передан, ищем по всем полям
         search_in = ["title", "artist", "genre", "mood"]
 
     conditions = []

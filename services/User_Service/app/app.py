@@ -8,6 +8,10 @@ from .auth import AuthInitializer, include_routers
 import json
 from fastapi.middleware.cors import CORSMiddleware
 
+import time
+from jose import jwt, JWTError
+from .redis_client import r
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/jwt/login")
 
 # Initialize logger
@@ -36,6 +40,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+JWT_SECRET = cfg.jwt_secret.get_secret_value()
+@app.middleware("http")
+async def update_user_activity_middleware(request: Request, call_next):
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], audience="fastapi-users:auth")
+            user_id = payload.get("sub")
+            if user_id:
+                current_time = int(time.time())
+                print(f"User ID: {user_id} - last activity time: {current_time}")  # Логирование для отладки
+                await r.setex(f"user:{user_id}:last_activity", 3600, current_time)
+                await r.sadd("active_users", user_id)
+            else:
+                print("No user_id found in token.")
+        except JWTError as e:
+            print(f"JWT Error: {e}")
+
+    response = await call_next(request)
+    return response
 
 auth = AuthInitializer()
 auth.initializer(cfg.jwt_secret)

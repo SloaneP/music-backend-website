@@ -24,11 +24,14 @@ services:
     entrypoint: http://analytics-service:5003/
     inject_token_in_swagger: true
 
+  - name: recommendation-service
+    entrypoint: http://recommendation-service:5004/
+    inject_token_in_swagger: true
+
 policies:
   # ---------------- USER-SERVICE ----------------
-  # Только админ (group_id == 1) может управлять группами
   - service: user-service
-    rule: r.sub.group_id == 1
+    rule: r.sub.group_id == 3
     resource: /users/*
     methods: GET
 
@@ -82,35 +85,64 @@ policies:
     methods: (PUT)|(DELETE)
     rule: r.sub.group_id > 0
 
-  # Облачные файлы доступны только авторизованным
   - service: music-service
     resource: /files*
     methods: (GET)|(POST)|(DELETE)
     rule: r.sub.group_id > 0
 
   # ---------------- PLAYLISTS ----------------
-  # Артисты и авторизованные пользователи могут создавать плейлисты
+  # Авторизованные пользователи могут создавать плейлисты с обложкой
   - service: music-service
-    resource: /playlists*
+    resource: /playlists/with-cover
     methods: POST
     rule: r.sub.group_id > 0
 
-  # Артисты и авторизованные пользователи могут редактировать свои плейлисты
+  # Авторизованные пользователи могут обновлять обложку плейлиста
   - service: music-service
-    resource: /playlists/*
-    methods: (PUT)|(DELETE)
+    resource: /playlists/cover/*
+    methods: PUT
     rule: r.sub.group_id > 0
 
-  # Просмотр плейлистов доступен всем пользователям
+  # Авторизованные пользователи могут редактировать свои плейлисты
   - service: music-service
-    resource: /playlists*
+    resource: /playlists/*
+    methods: PUT
+    rule: r.sub.group_id > 0
+
+  # Авторизованные пользователи могут удалять свои плейлисты
+  - service: music-service
+    resource: /playlists/*
+    methods: DELETE
+    rule: r.sub.group_id > 0
+
+  # Просмотр всех пользовательских плейлистов
+  - service: music-service
+    resource: /playlists
     methods: GET
     rule: r.sub.group_id > 0
 
-    # Просмотр плейлистов доступен всем пользователям
+  # Просмотр публичных плейлистов
+  - service: music-service
+    resource: /playlists/public
+    methods: GET
+    rule: r.sub.group_id > -1
+
+  # Просмотр конкретного плейлиста
   - service: music-service
     resource: /playlists/*
     methods: GET
+    rule: r.sub.group_id > 0
+
+  # Добавление трека в плейлист
+  - service: music-service
+    resource: /playlists/*
+    methods: POST
+    rule: r.sub.group_id > 0
+
+  # Удаление трека из плейлиста
+  - service: music-service
+    resource: /playlists/*
+    methods: DELETE
     rule: r.sub.group_id > 0
 
   # ---------------- FAVORITES ----------------
@@ -158,4 +190,16 @@ policies:
   - service: analytics-service
     resource: /user/analytics/*
     methods: PUT
+    rule: r.sub.group_id > 0
+
+  # ---------------- RECOMMENDATION ----------------
+
+  - service: recommendation-service
+    resource: /my-wave*
+    methods: GET
+    rule: r.sub.group_id > 0
+
+  - service: recommendation-service
+    resource: /recommendations/*
+    methods: GET
     rule: r.sub.group_id > 0

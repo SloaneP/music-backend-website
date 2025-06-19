@@ -44,21 +44,6 @@ services:
     ports:
       - "6379:6379"
 
-
-  rabbitmq:
-    image: "rabbitmq:3-management"
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
-    healthcheck:
-      test: ["CMD", "rabbitmqctl", "status"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
   celery_worker:
     build:
       context: ../services/analytics_service
@@ -134,5 +119,19 @@ services:
     depends_on:
       postgresql:
         condition: service_healthy
+    environment:
+      PG_ASYNC_DSN: ${PG_ASYNC_DSN}
+
+  recommendation-service:
+    build:
+      context: ../services/recommendation_service
+      dockerfile: ./Dockerfile
+    ports:
+      - "5004:5004"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      analytics-service:
+        condition: service_started
     environment:
       PG_ASYNC_DSN: ${PG_ASYNC_DSN}
