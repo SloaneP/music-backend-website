@@ -52,7 +52,7 @@ async def update_user_activity_middleware(request: Request, call_next):
             user_id = payload.get("sub")
             if user_id:
                 current_time = int(time.time())
-                print(f"User ID: {user_id} - last activity time: {current_time}")  # Логирование для отладки
+                print(f"User ID: {user_id} - last activity time: {current_time}")
                 await r.setex(f"user:{user_id}:last_activity", 3600, current_time)
                 await r.sadd("active_users", user_id)
             else:
