@@ -11,46 +11,33 @@ from .schemas import UserRecommendationUpdate, TrackResponse
 from .database.models import UserRecommendation
 from .fetch_from_music_service.fetch_all_tracks import fetch_all_tracks_from_music_service
 from .fetch_from_music_service.fetch_analytics import fetch_user_analytics
-from .redis_recent import track_recent_key, push_recent_track_ids
+from .redis_recent import track_recent_key, push_recent_track_ids, MAX_RECENT
 from .recommendation import recommend_tracks
 from .broker.redis import redis_client
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-def slim_track(track: dict) -> dict:
-    return {
-        "id": str(track["id"]),
-        "title": track.get("title", ""),
-        "artist": track.get("artist", ""),
-        "track_url": track.get("track_url", ""),
-        "cover_url": track.get("cover_url", ""),
-    }
 
 async def get_recommended_tracks_from_db(db: AsyncSession, user_id: UUID) -> List[TrackResponse]:
-    # Получаем информацию о рекомендациях пользователя из базы данных
     result = await db.execute(select(UserRecommendation).where(UserRecommendation.user_id == user_id))
     user_recommendation = result.scalars().first()
 
     if not user_recommendation:
         raise HTTPException(status_code=404, detail="Recommendations not found for this user")
 
-    # Рекомендуем треки
     recommended_tracks = user_recommendation.recommended_tracks
     if not recommended_tracks:
         raise HTTPException(status_code=404, detail="No recommended tracks for this user")
 
-    # Формируем ответ для пользователя
     return [TrackResponse(id=str(track_id), title="Track Title", artist="Artist Name", track_url="Track URL", cover_url="Cover URL") for track_id in recommended_tracks]
 
-# Получаем рекомендацию для пользователя по его user_id
 async def get_recommendation_by_user_id(db: AsyncSession, user_id: UUID) -> UserRecommendation | None:
     result = await db.execute(
         select(UserRecommendation).where(UserRecommendation.user_id == user_id)
     )
     return result.scalars().first()
 
-# Обновляем или создаем новую рекомендацию
 async def upsert_user_recommendation(db: AsyncSession, user_id: UUID, data: UserRecommendationUpdate) -> UserRecommendation:
     recommendation = await get_recommendation_by_user_id(db, user_id)
     if recommendation:
@@ -68,8 +55,7 @@ async def get_recommended_tracks(db: AsyncSession, user_id: UUID) -> List[TrackR
     recent_key = track_recent_key(user_id)
 
     try:
-        recent_ids_list = await redis_client.lrange(recent_key, 0, 99)
-        print(f"Recent from Redis: {recent_ids_list}")
+        recent_ids_list = await redis_client.lrange(recent_key, 0, MAX_RECENT - 1)
         recent_ids: Set[str] = set(recent_ids_list)
     except Exception as e:
         logger.error(f"[{user_id}] Redis error: {e}")
@@ -96,8 +82,6 @@ async def get_recommended_tracks(db: AsyncSession, user_id: UUID) -> List[TrackR
         recent_ids = set()
 
     filtered_tracks = [t for t in all_tracks if str(t["id"]) not in recent_ids]
-    # print(f"Tracks after filtering recent: {len(filtered_tracks)}")
-    print(f"All tracks after filtering: {[t['title'] for t in filtered_tracks]}")
 
     if len(filtered_tracks) < 6:
         logger.info(f"[{user_id}] Not enough filtered tracks, resetting recent history")
@@ -129,8 +113,8 @@ async def get_recommended_tracks(db: AsyncSession, user_id: UUID) -> List[TrackR
         total_favorites=analytics.get('total_favorites', None),
         most_favorite_tracks=analytics.get('most_favorite_tracks', []),
     )
-    await upsert_user_recommendation(db, user_id, update_data)
 
+    await upsert_user_recommendation(db, user_id, update_data)
     await push_recent_track_ids(redis_client, user_id, [t["id"] for t in selected if t.get("id")])
 
     return recommended_tracks_details

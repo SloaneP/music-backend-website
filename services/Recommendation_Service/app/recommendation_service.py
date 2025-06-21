@@ -1,8 +1,13 @@
 import uuid
-from .broker.redis import redis_client
+from .broker.redis import redis_client, check_redis_connection
 
 
 async def get_start_index(user_id: uuid.UUID) -> int:
+    redis_connected = await check_redis_connection()
+    if not redis_connected:
+        print(f"[{user_id}] Redis connection failed. Cannot fetch recommendations.")
+        return []
+
     key = f"{str(user_id)}_start_index"
     start_index = await redis_client.get(key)
 
@@ -19,10 +24,15 @@ async def get_start_index(user_id: uuid.UUID) -> int:
 
 
 async def save_start_index(user_id: uuid.UUID, index: int):
+    redis_connected = await check_redis_connection()
+    if not redis_connected:
+        print(f"[{user_id}] Redis connection failed. Cannot fetch recommendations.")
+        return []
+
     key = f"{str(user_id)}_start_index"
 
     if index < 0:
-        index = 0  # защита от отрицательных индексов
+        index = 0
 
     await redis_client.set(key, index)
     print(f"Saved start index {index} for user {user_id} in Redis")

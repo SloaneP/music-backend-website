@@ -25,13 +25,28 @@ policy_checker: RequestEnforcer = RequestEnforcer(
 logger.info(f"Policy services loaded: {policy_checker.services}")
 
 
+# class App(FastAPI):
+#     def openapi(self) -> Dict[str, Any]:
+#         scheme_builder = SchemeBuilder(super().openapi())
+#
+#         for target in policy_checker.services:
+#             resp = httpx.get(target.openapi_scheme)
+#             scheme_builder.append(resp.json(), inject_token_in_swagger=target.inject_token_in_swagger)
+#         return scheme_builder.result
+
 class App(FastAPI):
     def openapi(self) -> Dict[str, Any]:
         scheme_builder = SchemeBuilder(super().openapi())
 
         for target in policy_checker.services:
-            resp = httpx.get(target.openapi_scheme)
-            scheme_builder.append(resp.json(), inject_token_in_swagger=target.inject_token_in_swagger)
+            try:
+                resp = httpx.get(target.openapi_scheme)
+                resp.raise_for_status()
+                scheme_builder.append(resp.json(), inject_token_in_swagger=target.inject_token_in_swagger)
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                logger.error(f"Failed to fetch OpenAPI schema for service {target.name}: {e}")
+                continue
+
         return scheme_builder.result
 
 

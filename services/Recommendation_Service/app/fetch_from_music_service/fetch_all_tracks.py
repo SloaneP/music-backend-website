@@ -45,7 +45,7 @@ async def update_tracks_in_redis(all_tracks):
         logger.error(f"[cache] Unexpected error: {e}")
 
 
-async def fetch_all_tracks_from_music_service(limit_per_page: int = 1000) -> list[dict]:
+async def fetch_all_tracks_from_music_service(limit_per_page: int = 100) -> list[dict]:
     try:
         cached = await redis_client.get(CACHE_KEY)
         if cached:

@@ -1,7 +1,16 @@
 import random
-from .recommendation_service import get_start_index, save_start_index
 
-async def recommend_tracks(user_id, analytics, all_tracks, recent_ids, used_tracks=None):
+from .broker.redis import redis_client, check_redis_connection
+from .recommendation_service import get_start_index, save_start_index
+from .redis_recent import push_recent_track_ids, track_recent_key
+
+
+async def recommend_tracks(user_id, analytics, all_tracks, used_tracks=None):
+    redis_connected = await check_redis_connection()
+    if not redis_connected:
+        print(f"[{user_id}] Redis connection failed. Cannot fetch recommendations.")
+        return []
+
     if used_tracks is None:
         used_tracks = set()
 
@@ -30,14 +39,23 @@ async def recommend_tracks(user_id, analytics, all_tracks, recent_ids, used_trac
         print(f"[{user_id}] No tracks found after mood+genre filtering, using all.")
         filtered_by_mood = all_tracks
         await save_start_index(user_id, 0)
+        print(f"[{user_id}] Resetting index to 0 due to insufficient tracks.")
 
     available_tracks = [t for t in filtered_by_mood if t["id"] not in used_tracks]
 
+    if len(available_tracks) < 6:
+        print(f"[{user_id}] Not enough available tracks, clearing recent history.")
+        await redis_client.delete(track_recent_key(user_id))
+        available_tracks = all_tracks
+
     if start_index >= len(available_tracks):
+        print(f"[{user_id}] Start index {start_index} exceeds available tracks, resetting to 0.")
         start_index = 0
 
     selected_tracks = available_tracks[start_index:start_index + 6]
     used_tracks.update([t["id"] for t in selected_tracks])
+
+    await push_recent_track_ids(redis_client, user_id, [t["id"] for t in selected_tracks if t.get("id")])
 
     if len(selected_tracks) < 6:
         remaining = [t for t in available_tracks if t["id"] not in used_tracks]
@@ -45,6 +63,7 @@ async def recommend_tracks(user_id, analytics, all_tracks, recent_ids, used_trac
 
     next_index = start_index + len(selected_tracks)
     await save_start_index(user_id, next_index)
+    print(f"[{user_id}] Saved next index {next_index} after selection.")
 
     random.shuffle(selected_tracks)
     return selected_tracks[:6]
