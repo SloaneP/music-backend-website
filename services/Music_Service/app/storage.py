@@ -93,6 +93,13 @@ def upload_file_sync(content: bytes, filename: str) -> tuple[str, str]:
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
+    content_type_map = {
+        "mp3": "audio/mpeg",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png"
+    }
+
     unique_filename = f"{uuid.uuid4()}.{ext}"
     file_path = f"{folder}{unique_filename}"
 
@@ -101,7 +108,12 @@ def upload_file_sync(content: bytes, filename: str) -> tuple[str, str]:
         temp_path = temp_file.name
 
     try:
-        s3.upload_file(temp_path, BUCKET_NAME, file_path)
+        s3.upload_file(
+            Filename=temp_path,
+            Bucket=BUCKET_NAME,
+            Key=file_path,
+            ExtraArgs={"ContentType": content_type_map[ext]}
+        )
     finally:
         os.remove(temp_path)
 

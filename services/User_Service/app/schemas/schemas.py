@@ -1,6 +1,7 @@
 import uuid
-
+from typing import Optional
 from fastapi_users import schemas
+from pydantic import Field
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
     username: str | None = None
@@ -13,5 +14,6 @@ class UserCreate(schemas.BaseUserCreate):
 
 
 class UserUpdate(schemas.BaseUserUpdate):
-    username: str = None
-    group_id: int | None = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    # group_id: Optional[int] = None

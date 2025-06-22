@@ -116,5 +116,6 @@ async def get_recommended_tracks(db: AsyncSession, user_id: UUID) -> List[TrackR
 
     await upsert_user_recommendation(db, user_id, update_data)
     await push_recent_track_ids(redis_client, user_id, [t["id"] for t in selected if t.get("id")])
+    random.shuffle(recommended_tracks_details)
 
     return recommended_tracks_details
